@@ -56,6 +56,7 @@ class RAGApplication:
         self._init_vector_store()
         self._init_chains()  
         self._init_tools()
+        self._init_source_index()
         
         # 对话历史记录
         self.conversation_history = []
@@ -63,6 +64,85 @@ class RAGApplication:
         print("\nRAG应用初始化完成")
         print("=" * 70)
         time.sleep(2)
+
+    def _init_source_index(self):
+        """
+        初始化可用来源文件列表，用于“按问题自动限定来源”。
+        不拆分 JSON，也能用 metadata['source']（文件名）做检索过滤。
+        """
+        self.available_sources: List[str] = []
+        processed_json = self.config.project_path / "processing_results.json"
+        try:
+            if processed_json.exists():
+                with open(processed_json, "r", encoding="utf-8") as f:
+                    data = json.load(f)
+                if isinstance(data, list):
+                    self.available_sources = [
+                        item.get("file_name")
+                        for item in data
+                        if isinstance(item, dict) and item.get("file_name")
+                    ]
+        except Exception:
+            # 兜底：不影响系统运行
+            self.available_sources = []
+
+    @staticmethod
+    def _normalize_source_name(name: str) -> str:
+        """规范化文件名用于匹配（去扩展名、去常见公司后缀）。"""
+        base = re.sub(r"\.[a-zA-Z0-9]+$", "", name or "")
+        base = base.strip()
+        # 常见后缀：根据你的数据特点，先做轻量规则，避免过拟合
+        for suffix in ["股份有限公司", "有限公司", "集团", "公司"]:
+            if base.endswith(suffix):
+                base = base[: -len(suffix)]
+                break
+        return base.strip()
+
+    def _infer_source_filter(self, question: str) -> Optional[Dict[str, Any]]:
+        """
+        从问题中推断最可能的来源文件，并生成 Chroma 的 filter_dict。
+        - 支持“周一公司/周一有限公司/周一科技有限公司”这类提法
+        - 命中则返回 {"source": "<file_name>"}（与你向量库 metadata 一致）
+        """
+        if not question or not self.available_sources:
+            return None
+
+        q = question.strip()
+        if not q:
+            return None
+
+        best = None
+        best_score = 0
+
+        # 先尝试“文件名（去扩展/去后缀）”在问题中直接出现
+        for src in self.available_sources:
+            norm = self._normalize_source_name(src)
+            if not norm:
+                continue
+            if norm in q:
+                score = len(norm)
+                if score > best_score:
+                    best_score = score
+                    best = src
+
+        # 再尝试用问题里的中文片段去匹配文件名（比如“周一公司”匹配“周一有限公司”）
+        if best is None:
+            chinese_spans = re.findall(r"[\u4e00-\u9fa5]{2,}", q)
+            for src in self.available_sources:
+                norm = self._normalize_source_name(src)
+                if not norm:
+                    continue
+                for span in chinese_spans:
+                    # span 在 norm 或 norm 在 span 都算命中
+                    if span in norm or norm in span:
+                        score = min(len(span), len(norm))
+                        if score > best_score:
+                            best_score = score
+                            best = src
+
+        if best:
+            return {"source": best}
+        return None
     
     def _init_llm(self):
         """初始化语言模型"""
@@ -296,8 +376,17 @@ class RAGApplication:
         # 处理问题
         processed_q = process_question(question)
         
-        # 检索文档
-        docs = retrieve_documents(processed_q, self.vector_store, top_k=self.config.top_k)
+        # 检索文档：优先按问题自动限定来源，避免“成立时间”这类字段跨文件误召回
+        filter_dict = self._infer_source_filter(question)
+        docs = retrieve_documents(
+            processed_q,
+            self.vector_store,
+            top_k=self.config.top_k,
+            filter_dict=filter_dict,
+        )
+        # 如果限定来源后没检索到内容，自动回退到全库检索（更稳）
+        if not docs and filter_dict is not None:
+            docs = retrieve_documents(processed_q, self.vector_store, top_k=self.config.top_k)
         
         # 准备结果
         result = {
@@ -366,6 +455,7 @@ class RAGApplication:
             str: 生成的答案
         """
         # 检测是否需要调用工具
+        # 1. 计算器：问题里包含“计算”并且出现运算符
         if "计算" in question and any(op in question for op in ["+", "-", "*", "/"]):
             # 提取数学表达式
             numbers = re.findall(r'[\d+\-*/().]+', question)
@@ -373,7 +463,8 @@ class RAGApplication:
                 expr = numbers[0]
                 return self.call_tool("calculator", expr)
         
-        elif "时间" in question or "日期" in question:
+        # 2. 当前时间：只在问“现在几点/当前时间”等明显场景时触发
+        elif any(kw in question for kw in ["现在几点", "当前时间", "此刻时间", "现在的时间"]):
             return self.call_tool("datetime")
         
         elif "提取数字" in question:

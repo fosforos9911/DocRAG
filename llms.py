@@ -20,10 +20,12 @@ DATA_DIR = PROJECT_PATH / "data"
 CHROMA_PERSIST_DIR = DATA_DIR / "chroma"
 
 
-BAAI_MODEL_DIR = DATA_DIR / "llm" / "BAAI"  
-AVAILABLE_MODELS = ['bge-large-zh-v1.5']
-MODEL_NAME = AVAILABLE_MODELS[0]  
-MODEL_PATH = BAAI_MODEL_DIR / MODEL_NAME  
+BAAI_MODEL_DIR = DATA_DIR / "llm" / "BAAI"
+
+# 注意：本地实际目录名是 bge-large-zh-v1___5（下划线），需要与这里保持一致
+AVAILABLE_MODELS = ['bge-large-zh-v1___5']
+MODEL_NAME = AVAILABLE_MODELS[0]
+MODEL_PATH = BAAI_MODEL_DIR / MODEL_NAME
 # Chroma集合
 CHROMA_COLLECTION_NAME = "law_documents"
 
@@ -111,9 +113,18 @@ class BGELocalEmbeddings(Embeddings):
         # 使用传入的模型路径，默认为上面配置的路径
         self.model_path = model_path or MODEL_PATH
         
-        # 检查模型路径是否存在
+        # 检查模型路径是否存在且非空
         if not self.model_path.exists():
             raise FileNotFoundError(f"BGE 模型路径不存在: {self.model_path}")
+        if not any(self.model_path.iterdir()):
+            raise FileNotFoundError(
+                f"BGE 模型目录已创建但为空: {self.model_path}。"
+                f" 请从 HuggingFace 下载 'BAAI/bge-large-zh-v1.5' "
+                f"并保存到该目录，或者在 Python 中运行：\n"
+                f"from sentence_transformers import SentenceTransformer\n"
+                f"model = SentenceTransformer('BAAI/bge-large-zh-v1.5')\n"
+                f"model.save(r'{self.model_path}')"
+            )
         
         self.device = device
         self.batch_size = int(os.getenv("BGE_BATCH_SIZE", "32"))
