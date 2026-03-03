@@ -1,0 +1,22 @@
+streamlit==1.45.1
+
+# config
+python-dotenv==1.1.0
+
+# data preprocess
+pandas==2.2.3
+pdfplumber==0.11.9
+python-docx==1.2.0
+chardet==4.0.0
+tqdm==4.67.1
+
+# RAG (LangChain + Chroma)
+langchain-core==1.2.8
+langchain-openai==1.1.6
+langchain-chroma==1.1.0
+langchain-text-splitters==1.1.0
+chromadb==1.4.0
+openai==2.14.0
+
+# embeddings (local)
+sentence-transformers==5.2.0
